@@ -124,6 +124,7 @@ class OpenAIServingCompletion(OpenAIServing):
         if raw_request:
             raw_request.state.request_metadata = request_metadata
 
+        request_start_time = time.perf_counter()
         try:
             lora_request = self._maybe_get_adapters(request)
 
@@ -150,6 +151,8 @@ class OpenAIServingCompletion(OpenAIServing):
         except jinja2.TemplateError as e:
             logger.exception("Error in preprocessing prompt inputs")
             return self.create_error_response(e)
+
+        request_preprocess_time = time.perf_counter() - request_start_time
 
         # Extract data_parallel_rank from header (router can inject it)
         data_parallel_rank = self._get_data_parallel_rank(raw_request)
@@ -222,6 +225,8 @@ class OpenAIServingCompletion(OpenAIServing):
                         params=sampling_params,
                         lora_request=lora_request,
                         trace_headers=trace_headers,
+                        request_start_time=request_start_time,
+                        request_preprocess_time=request_preprocess_time,
                     )
                 else:
                     engine_request, tokenization_kwargs = await self._process_inputs(
@@ -487,8 +492,38 @@ class OpenAIServingCompletion(OpenAIServing):
                 total_tokens=total_prompt_tokens + total_completion_tokens,
             )
             if last_metrics is not None:
+                explicit_request_preprocess = getattr(
+                    last_metrics, "request_preprocess_time", None
+                )
+                explicit_handler = getattr(last_metrics, "handler_time", None)
+                explicit_queue = getattr(last_metrics, "queue_time", None)
+                explicit_first_step_postprocess = getattr(
+                    last_metrics, "first_step_postprocess_time", None
+                )
+                explicit_decode_postprocess = getattr(
+                    last_metrics, "decode_postprocess_time", None
+                )
+                explicit_finalize = getattr(last_metrics, "finalize_time", None)
                 explicit_prefill = getattr(last_metrics, "prefill_time", None)
                 explicit_decode = getattr(last_metrics, "decode_time", None)
+                if explicit_request_preprocess is not None:
+                    final_usage_info.request_preprocess_time = (
+                        explicit_request_preprocess
+                    )
+                if explicit_handler is not None:
+                    final_usage_info.handler_time = explicit_handler
+                if explicit_queue is not None:
+                    final_usage_info.queue_time = explicit_queue
+                if explicit_first_step_postprocess is not None:
+                    final_usage_info.first_step_postprocess_time = (
+                        explicit_first_step_postprocess
+                    )
+                if explicit_decode_postprocess is not None:
+                    final_usage_info.decode_postprocess_time = (
+                        explicit_decode_postprocess
+                    )
+                if explicit_finalize is not None:
+                    final_usage_info.finalize_time = explicit_finalize
                 if explicit_prefill is not None:
                     final_usage_info.prefill_time = explicit_prefill
                 elif (
@@ -632,8 +667,32 @@ class OpenAIServingCompletion(OpenAIServing):
         )
         if last_final_res is not None and last_final_res.metrics is not None:
             metrics = last_final_res.metrics
+            explicit_request_preprocess = getattr(
+                metrics, "request_preprocess_time", None
+            )
+            explicit_handler = getattr(metrics, "handler_time", None)
+            explicit_queue = getattr(metrics, "queue_time", None)
+            explicit_first_step_postprocess = getattr(
+                metrics, "first_step_postprocess_time", None
+            )
+            explicit_decode_postprocess = getattr(
+                metrics, "decode_postprocess_time", None
+            )
+            explicit_finalize = getattr(metrics, "finalize_time", None)
             explicit_prefill = getattr(metrics, "prefill_time", None)
             explicit_decode = getattr(metrics, "decode_time", None)
+            if explicit_request_preprocess is not None:
+                usage.request_preprocess_time = explicit_request_preprocess
+            if explicit_handler is not None:
+                usage.handler_time = explicit_handler
+            if explicit_queue is not None:
+                usage.queue_time = explicit_queue
+            if explicit_first_step_postprocess is not None:
+                usage.first_step_postprocess_time = explicit_first_step_postprocess
+            if explicit_decode_postprocess is not None:
+                usage.decode_postprocess_time = explicit_decode_postprocess
+            if explicit_finalize is not None:
+                usage.finalize_time = explicit_finalize
             if explicit_prefill is not None:
                 usage.prefill_time = explicit_prefill
             elif getattr(metrics, "scheduled_ts", 0.0) and getattr(

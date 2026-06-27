@@ -361,6 +361,30 @@ class BenchmarkMetrics:
     median_prefill_ms: float | None = None
     std_prefill_ms: float | None = None
     percentiles_prefill_ms: list[tuple[float, float]] | None = None
+    mean_request_preprocess_ms: float | None = None
+    median_request_preprocess_ms: float | None = None
+    std_request_preprocess_ms: float | None = None
+    percentiles_request_preprocess_ms: list[tuple[float, float]] | None = None
+    mean_handler_ms: float | None = None
+    median_handler_ms: float | None = None
+    std_handler_ms: float | None = None
+    percentiles_handler_ms: list[tuple[float, float]] | None = None
+    mean_queue_ms: float | None = None
+    median_queue_ms: float | None = None
+    std_queue_ms: float | None = None
+    percentiles_queue_ms: list[tuple[float, float]] | None = None
+    mean_first_step_postprocess_ms: float | None = None
+    median_first_step_postprocess_ms: float | None = None
+    std_first_step_postprocess_ms: float | None = None
+    percentiles_first_step_postprocess_ms: list[tuple[float, float]] | None = None
+    mean_decode_postprocess_ms: float | None = None
+    median_decode_postprocess_ms: float | None = None
+    std_decode_postprocess_ms: float | None = None
+    percentiles_decode_postprocess_ms: list[tuple[float, float]] | None = None
+    mean_finalize_ms: float | None = None
+    median_finalize_ms: float | None = None
+    std_finalize_ms: float | None = None
+    percentiles_finalize_ms: list[tuple[float, float]] | None = None
     mean_decode_ms: float | None = None
     median_decode_ms: float | None = None
     std_decode_ms: float | None = None
@@ -584,6 +608,12 @@ def calculate_metrics(
     all_tpots: list[float] = []
     ttfts: list[float] = []
     e2els: list[float] = []
+    request_preprocesses: list[float] = []
+    handlers: list[float] = []
+    queues: list[float] = []
+    first_step_postprocesses: list[float] = []
+    decode_postprocesses: list[float] = []
+    finalizes: list[float] = []
     prefills: list[float] = []
     decodes: list[float] = []
     for i in range(len(outputs)):
@@ -613,6 +643,20 @@ def calculate_metrics(
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
             e2els.append(outputs[i].latency)
+            if outputs[i].request_preprocess_time is not None:
+                request_preprocesses.append(outputs[i].request_preprocess_time)
+            if outputs[i].handler_time is not None:
+                handlers.append(outputs[i].handler_time)
+            if outputs[i].queue_time is not None:
+                queues.append(outputs[i].queue_time)
+            if outputs[i].first_step_postprocess_time is not None:
+                first_step_postprocesses.append(
+                    outputs[i].first_step_postprocess_time
+                )
+            if outputs[i].decode_postprocess_time is not None:
+                decode_postprocesses.append(outputs[i].decode_postprocess_time)
+            if outputs[i].finalize_time is not None:
+                finalizes.append(outputs[i].finalize_time)
             if outputs[i].prefill_time is not None:
                 prefills.append(outputs[i].prefill_time)
             if outputs[i].decode_time is not None:
@@ -761,6 +805,99 @@ def calculate_metrics(
         ],
         max_output_tokens_per_s=max_output_tokens_per_s,
         max_concurrent_requests=max_concurrent_requests,
+        mean_request_preprocess_ms=(
+            (np.mean(request_preprocesses) * 1000)
+            if request_preprocesses
+            else None
+        ),
+        median_request_preprocess_ms=(
+            (np.median(request_preprocesses) * 1000)
+            if request_preprocesses
+            else None
+        ),
+        std_request_preprocess_ms=(
+            (np.std(request_preprocesses) * 1000)
+            if request_preprocesses
+            else None
+        ),
+        percentiles_request_preprocess_ms=(
+            [
+                (p, np.percentile(request_preprocesses, p) * 1000)
+                for p in selected_percentiles
+            ]
+            if request_preprocesses
+            else None
+        ),
+        mean_handler_ms=(np.mean(handlers) * 1000) if handlers else None,
+        median_handler_ms=(np.median(handlers) * 1000) if handlers else None,
+        std_handler_ms=(np.std(handlers) * 1000) if handlers else None,
+        percentiles_handler_ms=(
+            [(p, np.percentile(handlers, p) * 1000) for p in selected_percentiles]
+            if handlers
+            else None
+        ),
+        mean_queue_ms=(np.mean(queues) * 1000) if queues else None,
+        median_queue_ms=(np.median(queues) * 1000) if queues else None,
+        std_queue_ms=(np.std(queues) * 1000) if queues else None,
+        percentiles_queue_ms=(
+            [(p, np.percentile(queues, p) * 1000) for p in selected_percentiles]
+            if queues
+            else None
+        ),
+        mean_first_step_postprocess_ms=(
+            (np.mean(first_step_postprocesses) * 1000)
+            if first_step_postprocesses
+            else None
+        ),
+        median_first_step_postprocess_ms=(
+            (np.median(first_step_postprocesses) * 1000)
+            if first_step_postprocesses
+            else None
+        ),
+        std_first_step_postprocess_ms=(
+            (np.std(first_step_postprocesses) * 1000)
+            if first_step_postprocesses
+            else None
+        ),
+        percentiles_first_step_postprocess_ms=(
+            [
+                (p, np.percentile(first_step_postprocesses, p) * 1000)
+                for p in selected_percentiles
+            ]
+            if first_step_postprocesses
+            else None
+        ),
+        mean_decode_postprocess_ms=(
+            (np.mean(decode_postprocesses) * 1000)
+            if decode_postprocesses
+            else None
+        ),
+        median_decode_postprocess_ms=(
+            (np.median(decode_postprocesses) * 1000)
+            if decode_postprocesses
+            else None
+        ),
+        std_decode_postprocess_ms=(
+            (np.std(decode_postprocesses) * 1000)
+            if decode_postprocesses
+            else None
+        ),
+        percentiles_decode_postprocess_ms=(
+            [
+                (p, np.percentile(decode_postprocesses, p) * 1000)
+                for p in selected_percentiles
+            ]
+            if decode_postprocesses
+            else None
+        ),
+        mean_finalize_ms=(np.mean(finalizes) * 1000) if finalizes else None,
+        median_finalize_ms=(np.median(finalizes) * 1000) if finalizes else None,
+        std_finalize_ms=(np.std(finalizes) * 1000) if finalizes else None,
+        percentiles_finalize_ms=(
+            [(p, np.percentile(finalizes, p) * 1000) for p in selected_percentiles]
+            if finalizes
+            else None
+        ),
         mean_prefill_ms=(np.mean(prefills) * 1000) if prefills else None,
         median_prefill_ms=(np.median(prefills) * 1000) if prefills else None,
         std_prefill_ms=(np.std(prefills) * 1000) if prefills else None,
@@ -1269,6 +1406,24 @@ async def benchmark(
         process_one_metric("ttft", "TTFT", "Time to First Token")
         process_one_metric("tpot", "TPOT", "Time per Output Token (excl. 1st token)")
         process_one_metric("itl", "ITL", "Inter-token Latency")
+        process_one_metric(
+            "request_preprocess",
+            "Request Preprocess",
+            "Request Preprocess Time",
+        )
+        process_one_metric("handler", "Handler", "Handler Time")
+        process_one_metric("queue", "Queue", "Queue Time")
+        process_one_metric(
+            "first_step_postprocess",
+            "First-step Postprocess",
+            "First-step Postprocess Time",
+        )
+        process_one_metric(
+            "decode_postprocess",
+            "Decode Postprocess",
+            "Decode Postprocess Time",
+        )
+        process_one_metric("finalize", "Finalize", "Finalize Time")
         process_one_metric("prefill", "Prefill", "Prefill Time")
         process_one_metric("decode", "Decode", "Decode Time")
     process_one_metric("e2el", "E2EL", "End-to-end Latency")

@@ -90,6 +90,12 @@ class RequestFuncOutput:
     ttft: float = 0.0  # Time to first token
     itl: list[float] = field(default_factory=list)  # list of inter-token latencies
     tpot: float = 0.0  # avg next-token latencies
+    request_preprocess_time: float | None = None
+    handler_time: float | None = None
+    queue_time: float | None = None
+    first_step_postprocess_time: float | None = None
+    decode_postprocess_time: float | None = None
+    finalize_time: float | None = None
     prefill_time: float | None = None
     decode_time: float | None = None
     prompt_len: int = 0
@@ -356,10 +362,24 @@ async def async_request_openai_chat_completions(
                                 generated_text += content or ""
                             elif usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
-                                if "prefill_time" in usage:
-                                    output.prefill_time = usage.get("prefill_time")
-                                if "decode_time" in usage:
-                                    output.decode_time = usage.get("decode_time")
+                                if "request_preprocess_time" in usage:
+                                    output.request_preprocess_time = usage.get(
+                                        "request_preprocess_time"
+                                    )
+                                if "handler_time" in usage:
+                                    output.handler_time = usage.get("handler_time")
+                                if "queue_time" in usage:
+                                    output.queue_time = usage.get("queue_time")
+                                if "first_step_postprocess_time" in usage:
+                                    output.first_step_postprocess_time = usage.get(
+                                        "first_step_postprocess_time"
+                                    )
+                                if "decode_postprocess_time" in usage:
+                                    output.decode_postprocess_time = usage.get(
+                                        "decode_postprocess_time"
+                                    )
+                                if "finalize_time" in usage:
+                                    output.finalize_time = usage.get("finalize_time")
                                 if "prefill_time" in usage:
                                     output.prefill_time = usage.get("prefill_time")
                                 if "decode_time" in usage:

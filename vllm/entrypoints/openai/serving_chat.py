@@ -233,6 +233,8 @@ class OpenAIServingChat(OpenAIServing):
         for the API specification. This API mimics the OpenAI
         Chat Completion API.
         """
+        request_start_time = time.perf_counter()
+
         error_check_ret = await self._check_model(request)
         if error_check_ret is not None:
             logger.error("Error with model %s", error_check_ret)
@@ -346,8 +348,11 @@ class OpenAIServingChat(OpenAIServing):
         # Extract data_parallel_rank from header (router can inject it)
         data_parallel_rank = self._get_data_parallel_rank(raw_request)
 
+        request_preprocess_time = time.perf_counter() - request_start_time
+
         # Schedule the request and get the result generator.
         generators: list[AsyncGenerator[RequestOutput, None]] = []
+        request_start_time = time.perf_counter()
         try:
             for i, engine_prompt in enumerate(engine_prompts):
                 prompt_text, _, _ = self._get_prompt_components(engine_prompt)
@@ -403,6 +408,8 @@ class OpenAIServingChat(OpenAIServing):
                         params=sampling_params,
                         lora_request=lora_request,
                         trace_headers=trace_headers,
+                        request_start_time=request_start_time,
+                        request_preprocess_time=request_preprocess_time,
                     )
                 else:
                     engine_request, tokenization_kwargs = await self._process_inputs(
@@ -1296,8 +1303,38 @@ class OpenAIServingChat(OpenAIServing):
                     total_tokens=num_prompt_tokens + completion_tokens,
                 )
                 if last_metrics is not None:
+                    explicit_request_preprocess = getattr(
+                        last_metrics, "request_preprocess_time", None
+                    )
+                    explicit_handler = getattr(last_metrics, "handler_time", None)
+                    explicit_queue = getattr(last_metrics, "queue_time", None)
+                    explicit_first_step_postprocess = getattr(
+                        last_metrics, "first_step_postprocess_time", None
+                    )
+                    explicit_decode_postprocess = getattr(
+                        last_metrics, "decode_postprocess_time", None
+                    )
+                    explicit_finalize = getattr(last_metrics, "finalize_time", None)
                     explicit_prefill = getattr(last_metrics, "prefill_time", None)
                     explicit_decode = getattr(last_metrics, "decode_time", None)
+                    if explicit_request_preprocess is not None:
+                        final_usage.request_preprocess_time = (
+                            explicit_request_preprocess
+                        )
+                    if explicit_handler is not None:
+                        final_usage.handler_time = explicit_handler
+                    if explicit_queue is not None:
+                        final_usage.queue_time = explicit_queue
+                    if explicit_first_step_postprocess is not None:
+                        final_usage.first_step_postprocess_time = (
+                            explicit_first_step_postprocess
+                        )
+                    if explicit_decode_postprocess is not None:
+                        final_usage.decode_postprocess_time = (
+                            explicit_decode_postprocess
+                        )
+                    if explicit_finalize is not None:
+                        final_usage.finalize_time = explicit_finalize
                     if explicit_prefill is not None:
                         final_usage.prefill_time = explicit_prefill
                     elif (
@@ -1342,8 +1379,38 @@ class OpenAIServingChat(OpenAIServing):
                 total_tokens=num_prompt_tokens + num_completion_tokens,
             )
             if last_metrics is not None:
+                explicit_request_preprocess = getattr(
+                    last_metrics, "request_preprocess_time", None
+                )
+                explicit_handler = getattr(last_metrics, "handler_time", None)
+                explicit_queue = getattr(last_metrics, "queue_time", None)
+                explicit_first_step_postprocess = getattr(
+                    last_metrics, "first_step_postprocess_time", None
+                )
+                explicit_decode_postprocess = getattr(
+                    last_metrics, "decode_postprocess_time", None
+                )
+                explicit_finalize = getattr(last_metrics, "finalize_time", None)
                 explicit_prefill = getattr(last_metrics, "prefill_time", None)
                 explicit_decode = getattr(last_metrics, "decode_time", None)
+                if explicit_request_preprocess is not None:
+                    request_metadata.final_usage_info.request_preprocess_time = (
+                        explicit_request_preprocess
+                    )
+                if explicit_handler is not None:
+                    request_metadata.final_usage_info.handler_time = explicit_handler
+                if explicit_queue is not None:
+                    request_metadata.final_usage_info.queue_time = explicit_queue
+                if explicit_first_step_postprocess is not None:
+                    request_metadata.final_usage_info.first_step_postprocess_time = (
+                        explicit_first_step_postprocess
+                    )
+                if explicit_decode_postprocess is not None:
+                    request_metadata.final_usage_info.decode_postprocess_time = (
+                        explicit_decode_postprocess
+                    )
+                if explicit_finalize is not None:
+                    request_metadata.final_usage_info.finalize_time = explicit_finalize
                 if explicit_prefill is not None:
                     request_metadata.final_usage_info.prefill_time = explicit_prefill
                 elif (

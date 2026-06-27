@@ -172,6 +172,13 @@ class UsageInfo(OpenAIBaseModel):
     total_tokens: int = 0
     completion_tokens: int | None = 0
     prompt_tokens_details: PromptTokenUsageInfo | None = None
+    request_preprocess_time: float | None = None
+    handler_time: float | None = None
+    queue_time: float | None = None
+    first_step_postprocess_time: float | None = None
+    decode_postprocess_time: float | None = None
+    finalize_time: float | None = None
+    response_serialize_time: float | None = None
     prefill_time: float | None = None
     decode_time: float | None = None
 
