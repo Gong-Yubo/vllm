@@ -23,8 +23,10 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import math
 import os
 import random
+import re
 import shutil
 import time
 import uuid
@@ -94,6 +96,168 @@ class SpecDecodeMetrics:
     num_draft_tokens: int
     num_accepted_tokens: int
     accepted_per_pos: dict[int, int]
+
+
+@dataclass
+class HistogramSnapshot:
+    """Single Prometheus histogram snapshot."""
+
+    count: float = 0.0
+    total_sum: float = 0.0
+    buckets: dict[float, float] | None = None
+
+
+@dataclass
+class HistogramStats:
+    """Benchmark-time stats reconstructed from Prometheus histograms."""
+
+    count: int
+    mean_ms: float
+    median_ms: float
+    percentiles_ms: list[tuple[float, float]]
+
+
+HISTOGRAM_LINE_RE = re.compile(
+    r'^(?P<name>[^{\s]+)(?:\{(?P<labels>[^}]*)\})?\s+(?P<value>[-+0-9.eE]+)$'
+)
+
+
+def _parse_prometheus_histogram(
+    text: str, metric_name: str
+) -> HistogramSnapshot | None:
+    buckets: dict[float, float] = {}
+    total_sum = 0.0
+    count = 0.0
+    found = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        match = HISTOGRAM_LINE_RE.match(line)
+        if match is None:
+            continue
+
+        name = match.group("name")
+        labels = match.group("labels") or ""
+        value = float(match.group("value"))
+
+        if name == f"{metric_name}_bucket":
+            found = True
+            le_match = re.search(r'le="([^"]+)"', labels)
+            if le_match is None:
+                continue
+            le_raw = le_match.group(1)
+            le = math.inf if le_raw == "+Inf" else float(le_raw)
+            buckets[le] = buckets.get(le, 0.0) + value
+        elif name == f"{metric_name}_sum":
+            found = True
+            total_sum += value
+        elif name == f"{metric_name}_count":
+            found = True
+            count += value
+
+    if not found:
+        return None
+
+    return HistogramSnapshot(count=count, total_sum=total_sum, buckets=buckets)
+
+
+def _diff_histogram_snapshots(
+    before: HistogramSnapshot | None, after: HistogramSnapshot | None
+) -> HistogramSnapshot | None:
+    if before is None or after is None:
+        return None
+
+    bucket_bounds = set(before.buckets or {}) | set(after.buckets or {})
+    buckets = {
+        bound: max(0.0, (after.buckets or {}).get(bound, 0.0) - (before.buckets or {}).get(bound, 0.0))
+        for bound in bucket_bounds
+    }
+    count = max(0.0, after.count - before.count)
+    total_sum = max(0.0, after.total_sum - before.total_sum)
+    if count <= 0:
+        return None
+
+    return HistogramSnapshot(count=count, total_sum=total_sum, buckets=buckets)
+
+
+def _estimate_histogram_quantile(
+    cumulative_buckets: dict[float, float], quantile: float
+) -> float | None:
+    if not cumulative_buckets:
+        return None
+
+    sorted_bounds = sorted(cumulative_buckets)
+    total = cumulative_buckets[sorted_bounds[-1]]
+    if total <= 0:
+        return None
+
+    target = total * quantile
+    previous_bound = 0.0
+    previous_count = 0.0
+    for bound in sorted_bounds:
+        current_count = cumulative_buckets[bound]
+        if current_count >= target:
+            bucket_count = current_count - previous_count
+            if bucket_count <= 0:
+                return bound
+            if math.isinf(bound):
+                return previous_bound
+            fraction = (target - previous_count) / bucket_count
+            return previous_bound + (bound - previous_bound) * fraction
+        previous_bound = bound
+        previous_count = current_count
+
+    return sorted_bounds[-1]
+
+
+def _build_histogram_stats(
+    snapshot: HistogramSnapshot | None, selected_percentiles: list[float]
+) -> HistogramStats | None:
+    if snapshot is None or snapshot.count <= 0:
+        return None
+
+    percentiles_ms: list[tuple[float, float]] = []
+    for percentile in selected_percentiles:
+        quantile_value = _estimate_histogram_quantile(
+            snapshot.buckets or {}, percentile / 100.0
+        )
+        if quantile_value is None:
+            continue
+        percentiles_ms.append((percentile, quantile_value * 1000))
+
+    median_seconds = _estimate_histogram_quantile(snapshot.buckets or {}, 0.5)
+    if median_seconds is None:
+        median_seconds = 0.0
+
+    return HistogramStats(
+        count=int(round(snapshot.count)),
+        mean_ms=(snapshot.total_sum / snapshot.count) * 1000,
+        median_ms=median_seconds * 1000,
+        percentiles_ms=percentiles_ms,
+    )
+
+
+async def fetch_histogram_metrics(
+    base_url: str, session: aiohttp.ClientSession, metric_names: list[str]
+) -> dict[str, HistogramSnapshot]:
+    metrics_url = f"{base_url}/metrics"
+    try:
+        async with session.get(metrics_url) as response:
+            if response.status != 200:
+                return {}
+            text = await response.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return {}
+
+    snapshots: dict[str, HistogramSnapshot] = {}
+    for metric_name in metric_names:
+        snapshot = _parse_prometheus_histogram(text, metric_name)
+        if snapshot is not None:
+            snapshots[metric_name] = snapshot
+    return snapshots
 
 
 async def fetch_spec_decode_metrics(
@@ -193,6 +357,14 @@ class BenchmarkMetrics:
     # Max output tokens per second and concurrent requests at that peak
     max_output_tokens_per_s: float
     max_concurrent_requests: int
+    mean_prefill_ms: float | None = None
+    median_prefill_ms: float | None = None
+    std_prefill_ms: float | None = None
+    percentiles_prefill_ms: list[tuple[float, float]] | None = None
+    mean_decode_ms: float | None = None
+    median_decode_ms: float | None = None
+    std_decode_ms: float | None = None
+    percentiles_decode_ms: list[tuple[float, float]] | None = None
 
 
 @dataclass
@@ -412,6 +584,8 @@ def calculate_metrics(
     all_tpots: list[float] = []
     ttfts: list[float] = []
     e2els: list[float] = []
+    prefills: list[float] = []
+    decodes: list[float] = []
     for i in range(len(outputs)):
         if outputs[i].success:
             output_len = outputs[i].output_tokens
@@ -439,6 +613,10 @@ def calculate_metrics(
             itls += outputs[i].itl
             ttfts.append(outputs[i].ttft)
             e2els.append(outputs[i].latency)
+            if outputs[i].prefill_time is not None:
+                prefills.append(outputs[i].prefill_time)
+            if outputs[i].decode_time is not None:
+                decodes.append(outputs[i].decode_time)
             completed += 1
         else:
             actual_output_lens.append(0)
@@ -583,6 +761,22 @@ def calculate_metrics(
         ],
         max_output_tokens_per_s=max_output_tokens_per_s,
         max_concurrent_requests=max_concurrent_requests,
+        mean_prefill_ms=(np.mean(prefills) * 1000) if prefills else None,
+        median_prefill_ms=(np.median(prefills) * 1000) if prefills else None,
+        std_prefill_ms=(np.std(prefills) * 1000) if prefills else None,
+        percentiles_prefill_ms=(
+            [(p, np.percentile(prefills, p) * 1000) for p in selected_percentiles]
+            if prefills
+            else None
+        ),
+        mean_decode_ms=(np.mean(decodes) * 1000) if decodes else None,
+        median_decode_ms=(np.median(decodes) * 1000) if decodes else None,
+        std_decode_ms=(np.std(decodes) * 1000) if decodes else None,
+        percentiles_decode_ms=(
+            [(p, np.percentile(decodes, p) * 1000) for p in selected_percentiles]
+            if decodes
+            else None
+        ),
     )
 
     return metrics, actual_output_lens
@@ -620,6 +814,11 @@ async def benchmark(
         request_func = ASYNC_REQUEST_FUNCS[endpoint_type]
     except KeyError:
         raise ValueError(f"Unknown backend: {endpoint_type}") from None
+
+    phase_metric_names = [
+        "vllm:request_prefill_time_seconds",
+        "vllm:request_decode_time_seconds",
+    ]
 
     # Reuses connections across requests to reduce TLS handshake overhead.
     connector = aiohttp.TCPConnector(
@@ -756,6 +955,9 @@ async def benchmark(
     print(f"Maximum request concurrency: {max_concurrency}")
 
     spec_decode_metrics_before = await fetch_spec_decode_metrics(base_url, session)
+    phase_histograms_before = await fetch_histogram_metrics(
+        base_url, session, phase_metric_names
+    )
 
     pbar = None if disable_tqdm else tqdm(total=len(input_requests))
 
@@ -841,7 +1043,11 @@ async def benchmark(
     benchmark_duration = time.perf_counter() - benchmark_start_time
 
     spec_decode_metrics_after = await fetch_spec_decode_metrics(base_url, session)
+    phase_histograms_after = await fetch_histogram_metrics(
+        base_url, session, phase_metric_names
+    )
     spec_decode_stats: dict[str, Any] | None = None
+    phase_histogram_stats: dict[str, HistogramStats] = {}
     if spec_decode_metrics_before is not None and spec_decode_metrics_after is not None:
         delta_drafts = (
             spec_decode_metrics_after.num_drafts - spec_decode_metrics_before.num_drafts
@@ -882,6 +1088,20 @@ async def benchmark(
                 "per_position_acceptance_rates": per_pos_rates,
             }
 
+    for metric_name, metric_label in (
+        ("vllm:request_prefill_time_seconds", "prefill"),
+        ("vllm:request_decode_time_seconds", "decode"),
+    ):
+        stats = _build_histogram_stats(
+            _diff_histogram_snapshots(
+                phase_histograms_before.get(metric_name),
+                phase_histograms_after.get(metric_name),
+            ),
+            selected_percentiles,
+        )
+        if stats is not None:
+            phase_histogram_stats[metric_label] = stats
+
     if task_type == TaskType.GENERATION:
         metrics, actual_output_lens = calculate_metrics(
             input_requests=input_requests,
@@ -898,6 +1118,20 @@ async def benchmark(
             selected_percentiles=selected_percentiles,
         )
         actual_output_lens = 0
+
+    if task_type == TaskType.GENERATION:
+        prefill_stats = phase_histogram_stats.get("prefill")
+        decode_stats = phase_histogram_stats.get("decode")
+        if metrics.mean_prefill_ms is None and prefill_stats is not None:
+            metrics.mean_prefill_ms = prefill_stats.mean_ms
+            metrics.median_prefill_ms = prefill_stats.median_ms
+            metrics.std_prefill_ms = None
+            metrics.percentiles_prefill_ms = prefill_stats.percentiles_ms
+        if metrics.mean_decode_ms is None and decode_stats is not None:
+            metrics.mean_decode_ms = decode_stats.mean_ms
+            metrics.median_decode_ms = decode_stats.median_ms
+            metrics.std_decode_ms = None
+            metrics.percentiles_decode_ms = decode_stats.percentiles_ms
 
     print("{s:{c}^{n}}".format(s=" Serving Benchmark Result ", n=50, c="="))
     print("{:<40} {:<10}".format("Successful requests:", metrics.completed))
@@ -1001,29 +1235,32 @@ async def benchmark(
         # metric.
         if metric_attribute_name not in selected_percentile_metrics:
             return
+        mean_value = getattr(metrics, f"mean_{metric_attribute_name}_ms", None)
+        median_value = getattr(metrics, f"median_{metric_attribute_name}_ms", None)
+        percentile_values = getattr(
+            metrics, f"percentiles_{metric_attribute_name}_ms", None
+        )
+        if mean_value is None or median_value is None or not percentile_values:
+            return
         print("{s:{c}^{n}}".format(s=metric_header, n=50, c="-"))
         print(
             "{:<40} {:<10.2f}".format(
                 f"Mean {metric_name} (ms):",
-                getattr(metrics, f"mean_{metric_attribute_name}_ms"),
+                mean_value,
             )
         )
         print(
             "{:<40} {:<10.2f}".format(
                 f"Median {metric_name} (ms):",
-                getattr(metrics, f"median_{metric_attribute_name}_ms"),
+                median_value,
             )
         )
-        result[f"mean_{metric_attribute_name}_ms"] = getattr(
-            metrics, f"mean_{metric_attribute_name}_ms"
-        )
-        result[f"median_{metric_attribute_name}_ms"] = getattr(
-            metrics, f"median_{metric_attribute_name}_ms"
-        )
-        result[f"std_{metric_attribute_name}_ms"] = getattr(
-            metrics, f"std_{metric_attribute_name}_ms"
-        )
-        for p, value in getattr(metrics, f"percentiles_{metric_attribute_name}_ms"):
+        result[f"mean_{metric_attribute_name}_ms"] = mean_value
+        result[f"median_{metric_attribute_name}_ms"] = median_value
+        std_value = getattr(metrics, f"std_{metric_attribute_name}_ms", None)
+        if std_value is not None:
+            result[f"std_{metric_attribute_name}_ms"] = std_value
+        for p, value in percentile_values:
             p_word = str(int(p)) if int(p) == p else str(p)
             print("{:<40} {:<10.2f}".format(f"P{p_word} {metric_name} (ms):", value))
             result[f"p{p_word}_{metric_attribute_name}_ms"] = value
@@ -1032,6 +1269,8 @@ async def benchmark(
         process_one_metric("ttft", "TTFT", "Time to First Token")
         process_one_metric("tpot", "TPOT", "Time per Output Token (excl. 1st token)")
         process_one_metric("itl", "ITL", "Inter-token Latency")
+        process_one_metric("prefill", "Prefill", "Prefill Time")
+        process_one_metric("decode", "Decode", "Decode Time")
     process_one_metric("e2el", "E2EL", "End-to-end Latency")
 
     if spec_decode_stats is not None:
@@ -1139,6 +1378,12 @@ def save_to_pytorch_benchmark_format(
         "mean_itl_ms",
         "std_itl_ms",
         "p99_itl_ms",
+        "median_prefill_ms",
+        "mean_prefill_ms",
+        "p99_prefill_ms",
+        "median_decode_ms",
+        "mean_decode_ms",
+        "p99_decode_ms",
     ]
     # These raw data might be useful, but they are rather big. They can be added
     # later if needed
@@ -1361,8 +1606,8 @@ def add_cli_args(parser: argparse.ArgumentParser):
         default=None,
         help="Comma-separated list of selected metrics to report percentiles. "
         "This argument specifies the metrics to report percentiles. "
-        'Allowed metric names are "ttft", "tpot", "itl", "e2el". '
-        'If not specified, defaults to "ttft,tpot,itl" for generative models '
+        'Allowed metric names are "ttft", "tpot", "itl", "prefill", "decode", "e2el". '
+        'If not specified, defaults to "ttft,tpot,itl,prefill,decode" for generative models '
         'and "e2el" for pooling models.',
     )
     parser.add_argument(
@@ -1635,7 +1880,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         if "temperature" not in sampling_params:
             sampling_params["temperature"] = 0.0  # Default to greedy decoding.
 
-        default_percentile_metrics = "ttft,tpot,itl"
+        default_percentile_metrics = "ttft,tpot,itl,prefill,decode"
     else:
         sampling_params = {}
         default_percentile_metrics = "e2el"

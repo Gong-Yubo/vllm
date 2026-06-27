@@ -710,9 +710,11 @@ class OpenAIServingChat(OpenAIServing):
         include_usage, include_continuous_usage = should_include_usage(
             stream_options, self.enable_force_include_usage
         )
+        last_metrics = None
 
         try:
             async for res in result_generator:
+                last_metrics = res.metrics
                 if res.prompt_token_ids is not None:
                     num_prompt_tokens = len(res.prompt_token_ids)
                     if res.encoder_prompt_token_ids is not None:
@@ -1293,6 +1295,27 @@ class OpenAIServingChat(OpenAIServing):
                     completion_tokens=completion_tokens,
                     total_tokens=num_prompt_tokens + completion_tokens,
                 )
+                if last_metrics is not None:
+                    explicit_prefill = getattr(last_metrics, "prefill_time", None)
+                    explicit_decode = getattr(last_metrics, "decode_time", None)
+                    if explicit_prefill is not None:
+                        final_usage.prefill_time = explicit_prefill
+                    elif (
+                        getattr(last_metrics, "scheduled_ts", 0.0)
+                        and getattr(last_metrics, "first_token_ts", 0.0)
+                    ):
+                        final_usage.prefill_time = (
+                            last_metrics.first_token_ts - last_metrics.scheduled_ts
+                        )
+                    if explicit_decode is not None:
+                        final_usage.decode_time = explicit_decode
+                    elif (
+                        getattr(last_metrics, "first_token_ts", 0.0)
+                        and getattr(last_metrics, "last_token_ts", 0.0)
+                    ):
+                        final_usage.decode_time = (
+                            last_metrics.last_token_ts - last_metrics.first_token_ts
+                        )
                 if self.enable_prompt_tokens_details and num_cached_tokens:
                     final_usage.prompt_tokens_details = PromptTokenUsageInfo(
                         cached_tokens=num_cached_tokens
@@ -1318,6 +1341,27 @@ class OpenAIServingChat(OpenAIServing):
                 completion_tokens=num_completion_tokens,
                 total_tokens=num_prompt_tokens + num_completion_tokens,
             )
+            if last_metrics is not None:
+                explicit_prefill = getattr(last_metrics, "prefill_time", None)
+                explicit_decode = getattr(last_metrics, "decode_time", None)
+                if explicit_prefill is not None:
+                    request_metadata.final_usage_info.prefill_time = explicit_prefill
+                elif (
+                    getattr(last_metrics, "scheduled_ts", 0.0)
+                    and getattr(last_metrics, "first_token_ts", 0.0)
+                ):
+                    request_metadata.final_usage_info.prefill_time = (
+                        last_metrics.first_token_ts - last_metrics.scheduled_ts
+                    )
+                if explicit_decode is not None:
+                    request_metadata.final_usage_info.decode_time = explicit_decode
+                elif (
+                    getattr(last_metrics, "first_token_ts", 0.0)
+                    and getattr(last_metrics, "last_token_ts", 0.0)
+                ):
+                    request_metadata.final_usage_info.decode_time = (
+                        last_metrics.last_token_ts - last_metrics.first_token_ts
+                    )
 
             # Log complete streaming response if output logging is enabled
             if self.enable_log_outputs and self.request_logger:

@@ -347,9 +347,11 @@ class OpenAIServingCompletion(OpenAIServing):
         include_usage, include_continuous_usage = should_include_usage(
             stream_options, self.enable_force_include_usage
         )
+        last_metrics = None
 
         try:
             async for prompt_idx, res in result_generator:
+                last_metrics = res.metrics
                 prompt_token_ids = res.prompt_token_ids
                 prompt_logprobs = res.prompt_logprobs
 
@@ -484,6 +486,27 @@ class OpenAIServingCompletion(OpenAIServing):
                 completion_tokens=total_completion_tokens,
                 total_tokens=total_prompt_tokens + total_completion_tokens,
             )
+            if last_metrics is not None:
+                explicit_prefill = getattr(last_metrics, "prefill_time", None)
+                explicit_decode = getattr(last_metrics, "decode_time", None)
+                if explicit_prefill is not None:
+                    final_usage_info.prefill_time = explicit_prefill
+                elif (
+                    getattr(last_metrics, "scheduled_ts", 0.0)
+                    and getattr(last_metrics, "first_token_ts", 0.0)
+                ):
+                    final_usage_info.prefill_time = (
+                        last_metrics.first_token_ts - last_metrics.scheduled_ts
+                    )
+                if explicit_decode is not None:
+                    final_usage_info.decode_time = explicit_decode
+                elif (
+                    getattr(last_metrics, "first_token_ts", 0.0)
+                    and getattr(last_metrics, "last_token_ts", 0.0)
+                ):
+                    final_usage_info.decode_time = (
+                        last_metrics.last_token_ts - last_metrics.first_token_ts
+                    )
 
             if self.enable_prompt_tokens_details and num_cached_tokens:
                 final_usage_info.prompt_tokens_details = PromptTokenUsageInfo(
@@ -607,6 +630,22 @@ class OpenAIServingCompletion(OpenAIServing):
             completion_tokens=num_generated_tokens,
             total_tokens=num_prompt_tokens + num_generated_tokens,
         )
+        if last_final_res is not None and last_final_res.metrics is not None:
+            metrics = last_final_res.metrics
+            explicit_prefill = getattr(metrics, "prefill_time", None)
+            explicit_decode = getattr(metrics, "decode_time", None)
+            if explicit_prefill is not None:
+                usage.prefill_time = explicit_prefill
+            elif getattr(metrics, "scheduled_ts", 0.0) and getattr(
+                metrics, "first_token_ts", 0.0
+            ):
+                usage.prefill_time = metrics.first_token_ts - metrics.scheduled_ts
+            if explicit_decode is not None:
+                usage.decode_time = explicit_decode
+            elif getattr(metrics, "first_token_ts", 0.0) and getattr(
+                metrics, "last_token_ts", 0.0
+            ):
+                usage.decode_time = metrics.last_token_ts - metrics.first_token_ts
 
         if (
             self.enable_prompt_tokens_details

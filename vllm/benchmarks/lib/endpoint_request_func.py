@@ -90,6 +90,8 @@ class RequestFuncOutput:
     ttft: float = 0.0  # Time to first token
     itl: list[float] = field(default_factory=list)  # list of inter-token latencies
     tpot: float = 0.0  # avg next-token latencies
+    prefill_time: float | None = None
+    decode_time: float | None = None
     prompt_len: int = 0
     error: str = ""
     start_time: float = 0.0
@@ -354,6 +356,14 @@ async def async_request_openai_chat_completions(
                                 generated_text += content or ""
                             elif usage := data.get("usage"):
                                 output.output_tokens = usage.get("completion_tokens")
+                                if "prefill_time" in usage:
+                                    output.prefill_time = usage.get("prefill_time")
+                                if "decode_time" in usage:
+                                    output.decode_time = usage.get("decode_time")
+                                if "prefill_time" in usage:
+                                    output.prefill_time = usage.get("prefill_time")
+                                if "decode_time" in usage:
+                                    output.decode_time = usage.get("decode_time")
 
                             most_recent_timestamp = timestamp
 
